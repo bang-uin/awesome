@@ -383,7 +383,7 @@ child_exit_callback(GPid pid, gint status, gpointer user_data)
 int
 luaA_spawn(lua_State *L)
 {
-    gchar **argv = NULL;
+    gchar **argv = NULL, **envp = NULL;
     bool use_sn = true, return_stdin = false, return_stdout = false, return_stderr = false;
     int stdin_fd = -1, stdout_fd = -1, stderr_fd = -1;
     int *stdin_ptr = NULL, *stdout_ptr = NULL, *stderr_ptr = NULL;
@@ -425,6 +425,45 @@ luaA_spawn(lua_State *L)
         return 1;
     }
 
+    if (!lua_isnoneornil(L, 7)) {
+        envp = parse_command(L, 7, &error);
+
+        if(!envp || !envp[0]) {
+            g_strfreev(envp);
+            if (error) {
+                lua_pushfstring(L, "spawn: parse error: %s", error->message);
+                g_error_free(error);
+            }
+            else
+                lua_pushliteral(L, "spawn: Failed to parse envp");
+            return 1;
+        } else {
+            // Transfer current environment
+            gchar **currentEnv = g_listenv();
+            int currentEnvLength = g_strv_length(currentEnv);
+            int envpLength = g_strv_length(envp);
+
+            gchar **newEnvp = g_new0(gchar *, currentEnvLength + envpLength + 1);
+
+            int i = 0;
+            for(; i < currentEnvLength; i++) {
+                gchar* e = g_strdup(currentEnv[i]);
+                newEnvp[i] = g_strconcat(e, "=", g_getenv(e), NULL);
+            }
+
+            for(int j = 0; j < envpLength; j++, i++) {
+                newEnvp[i] = g_strdup(envp[j]);
+            }
+
+            newEnvp[i] = NULL;
+
+            g_strfreev(envp);
+            g_strfreev(currentEnv);
+
+            envp = newEnvp;
+        }
+    }
+
     SnLauncherContext *context = NULL;
     if(use_sn)
     {
@@ -440,10 +479,11 @@ luaA_spawn(lua_State *L)
     }
 
     flags |= G_SPAWN_SEARCH_PATH;
-    retval = g_spawn_async_with_pipes(NULL, argv, NULL, flags,
+    retval = g_spawn_async_with_pipes(NULL, argv, envp, flags,
                                       spawn_callback, context, &pid,
                                       stdin_ptr, stdout_ptr, stderr_ptr, &error);
     g_strfreev(argv);
+    g_strfreev(envp);
     if(!retval)
     {
         lua_pushstring(L, error->message);
